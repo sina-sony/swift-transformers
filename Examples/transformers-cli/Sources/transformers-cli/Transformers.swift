@@ -65,7 +65,7 @@ struct TransformersCLI: AsyncParsableCommand {
         var promptProcessingTime: Double = 0 // seconds
         try await model.generate(config: config, prompt: prompt) { inProgressGeneration in
             if previousIndex == nil { // Prompt pre-filling
-                promptProcessingTime = Date().timeIntervalSince(startTime)
+                promptProcessingTime = Date().timeIntervalSince(startTime) * 1000
                 // Reset start time to more accurately compute the average tps.
                 startTime = Date()
             } else { // Extend
@@ -88,7 +88,7 @@ struct TransformersCLI: AsyncParsableCommand {
             print(
                 """
                 \(tps.formatted("%.2f")) tokens/s, \
-                prompt pre-filling time: \(promptProcessingTime.formatted("%.2f"))s, \
+                prompt pre-filling time: \(promptProcessingTime.formatted("%.2f"))ms, \
                 total time: \(completionTime.formatted("%.2f"))s
                 """)
         }
