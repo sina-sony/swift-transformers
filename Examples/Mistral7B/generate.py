@@ -1,14 +1,3 @@
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#     "coremltools",
-#     "numpy",
-#     "sentencepiece",
-#     "torch",
-#     "tqdm",
-#     "transformers",
-# ]
-# ///
 import argparse
 from typing import Dict, Generator, List, Tuple
 
@@ -37,7 +26,7 @@ def get_next_token(model: MLModel, prompt_tokens: np.ndarray) -> Generator[int, 
         """Perform greedy decoding on the logits array to get the next token."""
         return int(np.argmax(logits[0][-1], axis=-1))
 
-    def inference(model: MLModel, input_ids: np.ndarray, num_past_tokens: int) -> np.ndarray:
+    def inference(model: MLModel, input_ids: np.ndarray, num_past_tokens: int, kv_cache_state) -> np.ndarray:
         """Perform inference with the given model and input data."""
         causal_mask: np.ndarray = np.triu(
             np.full(
@@ -53,7 +42,7 @@ def get_next_token(model: MLModel, prompt_tokens: np.ndarray) -> Generator[int, 
         return outputs["logits"]
 
     kv_cache_state = model.make_state()
-    logits: np.ndarray = inference(model, input_ids=prompt_tokens, num_past_tokens=0)
+    logits: np.ndarray = inference(model, input_ids=prompt_tokens, num_past_tokens=0, kv_cache_state=kv_cache_state)
     token: int = sample(logits=logits)
     num_past_tokens: int = prompt_tokens.shape[-1]
 
@@ -63,6 +52,7 @@ def get_next_token(model: MLModel, prompt_tokens: np.ndarray) -> Generator[int, 
             model,
             input_ids=np.array([[token]], dtype=np.int32),
             num_past_tokens=num_past_tokens,
+            kv_cache_state=kv_cache_state,
         )
         token: int = sample(logits=logits)
         num_past_tokens += 1
