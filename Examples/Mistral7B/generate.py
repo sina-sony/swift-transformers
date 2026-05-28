@@ -1,10 +1,11 @@
+from time import perf_counter
 import argparse
-from typing import Dict, Generator, List, Tuple
+from typing import Generator, Tuple
 
 import numpy as np
 import coremltools as ct
 from coremltools.models import MLModel
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from export import METADATA_TOKENIZER
 
@@ -19,31 +20,35 @@ def load(model_path: str) -> Tuple[MLModel, AutoTokenizer]:
     tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     return model, tokenizer
 
+def sample(logits: np.ndarray) -> int:
+    """Perform greedy decoding on the logits array to get the next token."""
+    return int(np.argmax(logits[0][-1], axis=-1))
 
-def get_next_token(model: MLModel, prompt_tokens: np.ndarray) -> Generator[int, None, None]:
+def inference(model: ct.models.MLModel, input_ids: np.ndarray, num_past_tokens: int, kv_cache_state) -> np.ndarray:
+    """Perform inference with the given model and input data."""
+    causal_mask: np.ndarray = np.triu(
+        np.full(
+            (1, 1, input_ids.shape[-1], num_past_tokens + input_ids.shape[-1]),
+            fill_value=-np.inf if num_past_tokens == 0 else 0,
+        ),
+        k=1,
+    ).astype(np.float16)
+    outputs: dict[str, np.ndarray] = model.predict(
+        data={"inputIds": input_ids, "causalMask": causal_mask},
+        state=kv_cache_state,
+    )
+    return outputs["logits"]
+
+def get_next_token(model: ct.models.MLModel, prompt_tokens: np.ndarray) -> Generator[int, None, None]:
     """Generate a sequence of tokens with naive greedy decoding."""
 
-    def sample(logits: np.ndarray) -> int:
-        """Perform greedy decoding on the logits array to get the next token."""
-        return int(np.argmax(logits[0][-1], axis=-1))
-
-    def inference(model: MLModel, input_ids: np.ndarray, num_past_tokens: int, kv_cache_state) -> np.ndarray:
-        """Perform inference with the given model and input data."""
-        causal_mask: np.ndarray = np.triu(
-            np.full(
-                (1, 1, input_ids.shape[-1], num_past_tokens + input_ids.shape[-1]),
-                fill_value=-np.inf if num_past_tokens == 0 else 0,
-            ),
-            k=1,
-        ).astype(np.float16)
-        outputs: Dict[str, np.ndarray] = model.predict(
-            data={"inputIds": input_ids, "causalMask": causal_mask},
-            state=kv_cache_state,
-        )
-        return outputs["logits"]
-
     kv_cache_state = model.make_state()
-    logits: np.ndarray = inference(model, input_ids=prompt_tokens, num_past_tokens=0, kv_cache_state=kv_cache_state)
+    logits: np.ndarray = inference(
+        model, 
+        input_ids=prompt_tokens, 
+        num_past_tokens=0, 
+        kv_cache_state=kv_cache_state
+    )
     token: int = sample(logits=logits)
     num_past_tokens: int = prompt_tokens.shape[-1]
 
@@ -58,19 +63,38 @@ def get_next_token(model: MLModel, prompt_tokens: np.ndarray) -> Generator[int, 
         token: int = sample(logits=logits)
         num_past_tokens += 1
 
-
 def generate(
-    model: MLModel,
+    model: ct.models.MLModel,
     prompt: str,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizer,
     max_new_tokens: int,
 ) -> str:
-    prompt_tokens: np.ndarray = tokenizer(prompt, return_tensors="np").input_ids
-    extend_tokens: List[int] = []
+    messages = [
+        {
+            "role": "user", 
+            "content": prompt,
+        }
+    ]
+    formatted_prompt = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+    prefill_start = perf_counter()
+    prompt_tokens: np.ndarray = tokenizer(formatted_prompt, return_tensors="np").input_ids
+    extend_tokens: list[int] = []
     for i, token in enumerate(get_next_token(model, prompt_tokens=prompt_tokens.astype(np.int32))):
-        if token == tokenizer.eos_token_id or i == max_new_tokens:
-            break
         extend_tokens.append(token)
+        if i == 0:
+            prefill_end = perf_counter()
+            decode_start = prefill_end
+            ttft = (prefill_end - prefill_start) * 1000
+            print(f"Time to first token: {ttft:.2f} seconds")
+        if token == tokenizer.eos_token_id or i + 1 == max_new_tokens:
+            decode_end = perf_counter()
+            decode_tps = i / (decode_end - decode_start)
+            print(f"decode throughput: {decode_tps:.2f} tok/s")
+            break
     return tokenizer.decode(prompt_tokens[0].tolist() + extend_tokens)
 
 

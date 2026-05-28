@@ -1,11 +1,11 @@
 import logging
 import warnings
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Tuple
 
 import coremltools as ct
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, SmolVLMForConditionalGeneration
+from transformers import AutoModelForCausalLM
 from transformers.cache_utils import Cache
 
 warnings.filterwarnings("ignore")
