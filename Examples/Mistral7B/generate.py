@@ -2,6 +2,7 @@ import argparse
 from typing import Dict, Generator, List, Tuple
 
 import numpy as np
+import coremltools as ct
 from coremltools.models import MLModel
 from transformers import AutoTokenizer
 
@@ -10,7 +11,7 @@ from export import METADATA_TOKENIZER
 
 def load(model_path: str) -> Tuple[MLModel, AutoTokenizer]:
     """Load a Core ML model and corresponding tokenizer."""
-    model: MLModel = MLModel(model_path)
+    model: MLModel = MLModel(model_path, optimization_hints={ 'specializationStrategy': ct.SpecializationStrategy.FastPrediction })
     description = model.get_spec().description
     if METADATA_TOKENIZER not in description.metadata.userDefined:
         raise ValueError("Model metadata does not contain tokenizer path.")
