@@ -5,7 +5,7 @@ from typing import Any, List, Optional, Tuple
 import coremltools as ct
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, SmolVLMForConditionalGeneration
 from transformers.cache_utils import Cache
 
 warnings.filterwarnings("ignore")
@@ -25,39 +25,66 @@ class SliceUpdateKeyValueCache(Cache):
         dtype=torch.float32,
     ) -> None:
         """KV cache of shape (#layers, batch_size, #kv_heads, context_size, head_dim)."""
-        super().__init__()
+        super().__init__(layers=[])
         self.past_seen_tokens: int = 0
+        self._max_cache_len: int = shape[-2]
         self.k_cache: torch.Tensor = torch.zeros(shape, dtype=dtype, device=device)
         self.v_cache: torch.Tensor = torch.zeros(shape, dtype=dtype, device=device)
 
     def update(
         self,
-        k_state: torch.Tensor,
-        v_state: torch.Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
         layer_idx: int,
-        cache_kwargs: Optional[dict[str, Any]] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Update key / value cache tensors for slice [begin, end).
-        Return slice of key / value cache tensors from [0, end)."""
-        position = cache_kwargs.get("cache_position", None)
-        assert position is not None, "cache_position required to update cache."
-        begin, end = self.past_seen_tokens, self.past_seen_tokens + position.shape[-1]
-        self.k_cache[layer_idx, :, : k_state.shape[1], begin:end, :] = k_state
-        self.v_cache[layer_idx, :, : v_state.shape[1], begin:end, :] = v_state
-        k_cache: torch.Tensor = self.k_cache[layer_idx, :, :, :end, :]
-        v_cache: torch.Tensor = self.v_cache[layer_idx, :, :, :end, :]
-        return k_cache, v_cache
+        """Update key/value cache tensors for slice [begin, end).
 
-    def get_seq_length(self, _: int | None = 0) -> int:
-        """Get the sequence length of the cache."""
+        Current Transformers Llama calls:
+            past_key_values.update(key_states, value_states, layer_idx)
+
+        It does not pass cache_position anymore.
+        """
+        begin = self.past_seen_tokens
+        end = begin + key_states.shape[-2]
+        self.k_cache[layer_idx, :, : key_states.shape[1], begin:end, :] = key_states
+        self.v_cache[layer_idx, :, : value_states.shape[1], begin:end, :] = value_states
+
+        return (
+            self.k_cache[layer_idx, :, :, :end, :],
+            self.v_cache[layer_idx, :, :, :end, :],
+        )
+
+    def get_seq_length(self, layer_idx: int | None = 0) -> int:
         return self.past_seen_tokens
+
+    def get_max_cache_shape(self, layer_idx: int | None = 0) -> int:
+        return self.max_cache_len
+
+    def get_mask_sizes(self, query_length: int, layer_idx: int) -> tuple[int, int]:
+        kv_length = self.past_seen_tokens + query_length
+        kv_offset = 0
+        return kv_length, kv_offset
+
+    @property
+    def max_cache_len(self) -> int:
+        return self._max_cache_len
+
+    @property
+    def is_compileable(self) -> bool:
+        return False
+
+    @property
+    def is_sliding(self) -> list[bool]:
+        return [False] * self.k_cache.shape[0]
 
 
 class StatefulModelForCausalLM(torch.nn.Module):
     def __init__(self, model_path: str, max_context_size: int = 2048, batch_size: int = 1) -> None:
         super().__init__()
 
-        self.model = AutoModelForCausalLM.from_pretrained(model_path)
+        self.model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.float32)
 
         # Register KV cache buffers to be recognized as Core ML states
         config = self.model.config
@@ -133,7 +160,7 @@ def export() -> None:
     )
     mlmodel_fp16._spec.description.metadata.userDefined.update({METADATA_TOKENIZER: MODEL_ID})
     del traced_model
-    mlmodel_fp16.save("StatefulLlama3.2FP16.mlpackage")
+    mlmodel_fp16.save("./models/StatefulLlama3.2FP16.mlpackage")
 
     # Block-wise quantize model weights to int4
     op_config = ct.optimize.coreml.OpLinearQuantizerConfig(
@@ -146,7 +173,7 @@ def export() -> None:
     mlmodel_int4 = ct.optimize.coreml.linear_quantize_weights(mlmodel_fp16, config=config)
     mlmodel_int4._spec.description.metadata.userDefined.update({METADATA_TOKENIZER: MODEL_ID})
     del mlmodel_fp16
-    mlmodel_int4.save("StatefulLlama3.2Int4.mlpackage")
+    mlmodel_int4.save("./models/StatefulLlama3.2Int4.mlpackage")
 
 
 if __name__ == "__main__":

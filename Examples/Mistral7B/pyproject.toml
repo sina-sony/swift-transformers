@@ -9,7 +9,7 @@ dependencies = [
     "sentencepiece",
     "torch",
     "tqdm",
-    "transformers==4.53.3",
+    # "transformers==4.53.3",
     "numpy<2.4",
-    # "transformers>=5",
+    "transformers>=5",
 ]
